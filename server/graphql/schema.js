@@ -3,9 +3,22 @@ const { gql } = require("apollo-server-express");
 module.exports = gql`
   type Query {
     me: User
-    repos: [Repo!]!
-    pullRequests(ownerLogin: String!, repoName: String!): [PullRequest!]!
-    comments(prId: String!): [Comment!]!
+    repos(
+      page: Int = 1
+      perPage: Int = 100
+      sort: String = "created"
+      order: String = "desc"
+    ): [Repo!]!
+    pullRequests(
+      ownerLogin: String!
+      repoName: String!
+      state: String
+      page: Int = 1
+      perPage: Int = 10
+      sort: String = "created"
+      order: String = "desc"
+    ): [PullRequest!]!
+    comments(prId: ID!): [Comment!]!
     suggestions(prId: ID!): [Suggestion!]!
   }
 
@@ -39,9 +52,9 @@ module.exports = gql`
   }
 
   type Mutation {
-    addComment(prId: String!, body: String!): Comment!
+    addComment(prId: ID!, body: String!): Comment!
     deleteComment(id: ID!): Boolean!
-    generateSuggestions(prId: String!, diff: String!): [Suggestion!]!
+    generateSuggestions(prId: ID!, diff: String!): [Suggestion!]!
   }
 
   type Suggestion {
@@ -51,5 +64,10 @@ module.exports = gql`
     message: String!
     line: Int!
     createdAt: String!
+  }
+
+  type Subscription {
+    commentAdded(prId: ID!): Comment!
+    suggestionGenerated(prId: ID!): Suggestion!
   }
 `;

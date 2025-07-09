@@ -9,7 +9,11 @@ const {
 const Comment = require("../models/Comment");
 const { generateSuggestions } = require("../services/aiService");
 const Suggestion = require("../models/Suggestion");
-
+const pubsub = require("../pubsub");
+const {
+  AuthenticationError,
+  UserInputError,
+} = require("apollo-server-express");
 module.exports = {
   Query: {
     me: async (_, __, { token }) => {
@@ -18,16 +22,51 @@ module.exports = {
       return await getOrCreateUser(githubToken);
     },
 
-    repos: async (_, __, { token }) => {
-      if (!token) throw new Error("Not authenticated");
+    repos: async (
+      _,
+      { page = 1, perPage = 10, sort = "created", order = "desc" },
+      { token }
+    ) => {
+      if (!token) throw new AuthenticationError("Not authenticated");
+      if (page < 1 || perPage < 1 || perPage > 100) {
+        throw new UserInputError(
+          "`page` and `perPage` must be positive; max 100"
+        );
+      }
       const { githubToken } = jwt.verify(token, process.env.JWT_SECRET);
-      return await listUserRepos(githubToken);
+      return await listUserRepos(githubToken, page, perPage, sort, order);
     },
 
-    pullRequests: async (_, { ownerLogin, repoName }, { token }) => {
-      if (!token) throw new Error("Not authenticated");
+    pullRequests: async (
+      _,
+      {
+        ownerLogin,
+        repoName,
+        page = 1,
+        state = "open",
+        perPage = 10,
+        sort = "created",
+        order = "desc",
+      },
+      { token }
+    ) => {
+      if (!token) throw new AuthenticationError("Not authenticated");
+      if (page < 1 || perPage < 1 || perPage > 100) {
+        throw new UserInputError(
+          "`page` and `perPage` must be positive; max 100"
+        );
+      }
       const { githubToken } = jwt.verify(token, process.env.JWT_SECRET);
-      return await listPullRequests(githubToken, ownerLogin, repoName);
+      return await listPullRequests(
+        githubToken,
+        ownerLogin,
+        repoName,
+        state,
+        page,
+        perPage,
+        (sort = "created"),
+        (order = "desc")
+      );
     },
 
     comments: async (_, { prId }) => {
@@ -41,7 +80,7 @@ module.exports = {
 
   Mutation: {
     addComment: async (_, { prId, body }, { token }) => {
-      if (!token) throw new Error("Not authenticated");
+      if (!token) throw new AuthenticationError("Not authenticated");
 
       const { githubToken } = jwt.verify(token, process.env.JWT_SECRET);
 
@@ -54,17 +93,16 @@ module.exports = {
         body,
       });
       await comment.save();
+      pubsub.publish(`COMMENT_ADDED:${prId}`, { commentAdded: comment });
 
       return comment;
     },
 
     generateSuggestions: async (_, { prId, diff }, { token }) => {
-      if (!token) throw new Error("Not authenticated");
+      if (!token) throw new AuthenticationError("Not authenticated");
 
-      // Verify JWT (we only need to ensure user is authenticated)
       jwt.verify(token, process.env.JWT_SECRET);
 
-      // Call external AI service (will error if SUGGESTION_API_URL is not configured)
       let suggestions;
       try {
         suggestions = await generateSuggestions(prId, diff);
@@ -72,9 +110,25 @@ module.exports = {
         throw new Error(`Failed to generate suggestions: ${err.message}`);
       }
 
-      // Persist suggestions in MongoDB
       const docs = await Suggestion.insertMany(suggestions);
+      pubsub.publish(`SUGGESTION_ADDED:${prId}`, {
+        suggestionGenerated: docs,
+      });
       return docs;
+    },
+  },
+
+  Subscription: {
+    commentAdded: {
+      subscribe: (_, { prId }) => {
+        pubsub.asyncIterator(`COMMENT_ADDED:${prId}`);
+      },
+    },
+
+    suggestionGenerated: {
+      subscribe: (_, { prId }) => {
+        pubsub.asyncIterator(`SUGGESTION_ADDED:${prId}`);
+      },
     },
   },
 };
